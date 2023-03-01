@@ -7,6 +7,9 @@ const {
   useHotKeyHandler,
 } = require('bens_ui_components');
 const {config} = require('../config');
+const {
+  getYourBike, oppositeDir,
+} = require('../selectors/misc');
 const {dispatchToServer} = require('../clientToServer');
 import postVisit from '../postVisit';
 const {useState, useMemo, useEffect, useReducer} = React;
@@ -19,6 +22,13 @@ function Game(props) {
   // initializations
   useEffect(() => {
     postVisit('/game', 'GET');
+
+    const canvas = document.getElementById('canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const {width, height} = getState().game.worldSize;
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, width, height);
   }, []);
 
   // hotkeys
@@ -26,14 +36,23 @@ function Game(props) {
   useEffect(() => {
     for (const dir of ['left', 'right', 'up', 'down']) {
       dispatch({type: "SET_HOTKEY", key: dir, press: 'onKeyDown', fn: () => {
-        console.log("set direction", dir);
-        dispatch({type: 'SET_DIRECTION', direction: dir});
-        // TODO: also need to send this to the server
+        const game = getState().game;
+        const bike = getYourBike(game);
+        if (bike.direction != dir && dir != oppositeDir(bike.direction)) {
+          const action = {type: 'SET_DIRECTION', direction: dir, time: game.time + 1};
+          dispatch({type: 'ENQUEUE_ACTION', action});
+          dispatchToServer({type: 'ENQUEUE_ACTION', action: {...action, isOther: true}});
+        }
       }});
     }
     dispatch({type: "SET_HOTKEY", key: 'space', press: 'onKeyDown', fn: () => {
-      // TODO: check that you have boosts available
-      dispatch({type: 'SET_BOOST'});
+      const game = getState().game;
+      const bike = getYourBike(game);
+      if (bike.boosts > 0) {
+        const action = {type: 'SET_BOOST', time: game.time + 1};
+        dispatch({type: 'ENQUEUE_ACTION', action});
+        dispatchToServer({type: 'ENQUEUE_ACTION', action: {...action, isOther: true}});
+      }
     }});
   }, []);
 

@@ -7,18 +7,13 @@ const render = (game) => {
   const ctx = canvas.getContext("2d");
 
   const {width, height} = game.worldSize;
-  ctx.fillStyle = "black";
-  ctx.fillRect(0, 0, width, height);
+  // happens once in ui/Game initialization
+  // ctx.fillStyle = "black";
+  // ctx.fillRect(0, 0, width, height);
 
-  const imageData = ctx.createImageData(width, height);
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) {
-      if (!game.grid[x][y]) {
-        setColorAtPixel(imageData, 'black', width, x, y);
-      } else {
-        setColorAtPixel(imageData, game.grid[x][y], width, x, y);
-      }
-    }
+  const imageData = ctx.getImageData(0, 0, width, height);
+  for (const bike of game.bikes) {
+    setColorAtPixel(imageData, bike.color, width, bike.position.x, bike.position.y);
   }
   ctx.putImageData(imageData, 0, 0, 0, 0, width, height);
 

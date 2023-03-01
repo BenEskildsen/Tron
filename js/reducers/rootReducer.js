@@ -108,11 +108,10 @@ const rootReducer = (state, action) => {
         clientID: state.clientID,
         entities,
         prevTickTime: new Date().getTime(),
-        time: 0,
         tickInterval: setInterval(
           // HACK: dispatch is only available via window
           () => dispatch({type: 'TICK'}),
-          config.msPerTick,
+          state.config.msPerTick,
         ),
       };
       return {
@@ -123,6 +122,8 @@ const rootReducer = (state, action) => {
     }
     case 'SET':
     case 'SET_DIRECTION':
+    case 'SET_BOOST':
+    case 'ENQUEUE_ACTION':
     case 'SELECT_ENTITIES':
     case 'TICK':
     case 'STOP_TICK':
@@ -152,8 +153,12 @@ const initState = () => {
 
 const initGameState = (state, config, clientID) => {
   const game = {
+    time: 0,
     bikes: [],
-    grid: [],
+    actions: [[]], // Arrayarray where each index is an array of actions that
+      // occurred on that tick
+
+    config: deepCopy(config),
 
     worldSize: {...config.worldSize},
     canvasSize: {width: window.innerWidth, height: window.innerHeight},
@@ -177,7 +182,8 @@ const initGameState = (state, config, clientID) => {
     },
     direction: 'right',
     boosts: config.numBoosts,
-    isBoosting: false,
+    boost: 0,
+    prevPositions: [],
   });
   game.bikes.push({
     isYou: !isHost(state),
@@ -188,24 +194,9 @@ const initGameState = (state, config, clientID) => {
     },
     direction: 'left',
     boosts: config.numBoosts,
-    isBoosting: false,
+    boost: 0,
+    prevPositions: [],
   });
-
-  // initialize grid
-  for (let x = 0; x < config.worldSize.width; x++) {
-    const row = [];
-    for (let y = 0; y < config.worldSize.height; y++) {
-      if (equals({x, y}, game.bikes[0].position)) {
-        row.push('blue');
-      } else if (equals({x, y}, game.bikes[1].position)) {
-        row.push('red')
-      } else {
-        row.push(null);
-      }
-    }
-    game.grid.push(row);
-  }
-
 
   return game;
 }

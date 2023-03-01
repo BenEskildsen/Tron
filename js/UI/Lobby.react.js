@@ -128,7 +128,7 @@ const Settings = (props) => {
     <div>
       <div><b>Settings:</b></div>
       Game ms per tick:
-      <Slider value={session.config.msPerTick} min={1} max={1000}
+      <Slider value={state.config.msPerTick} min={1} max={1000}
         noOriginalValue={true}
         onChange={(msPerTick) => {
           dispatch({type: 'EDIT_SESSION_PARAMS', msPerTick});

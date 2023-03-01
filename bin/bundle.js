@@ -18,6 +18,10 @@ const {
   config
 } = require('../config');
 const {
+  getYourBike,
+  oppositeDir
+} = require('../selectors/misc');
+const {
   dispatchToServer
 } = require('../clientToServer');
 const {
@@ -37,6 +41,15 @@ function Game(props) {
   // initializations
   useEffect(() => {
     (0, _postVisit.default)('/game', 'GET');
+    const canvas = document.getElementById('canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const {
+      width,
+      height
+    } = getState().game.worldSize;
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, width, height);
   }, []);
 
   // hotkeys
@@ -51,15 +64,55 @@ function Game(props) {
         key: dir,
         press: 'onKeyDown',
         fn: () => {
-          console.log("set direction", dir);
-          dispatch({
-            type: 'SET_DIRECTION',
-            direction: dir
-          });
-          // TODO: also need to send this to the server
+          const game = getState().game;
+          const bike = getYourBike(game);
+          if (bike.direction != dir && dir != oppositeDir(bike.direction)) {
+            const action = {
+              type: 'SET_DIRECTION',
+              direction: dir,
+              time: game.time + 1
+            };
+            dispatch({
+              type: 'ENQUEUE_ACTION',
+              action
+            });
+            dispatchToServer({
+              type: 'ENQUEUE_ACTION',
+              action: {
+                ...action,
+                isOther: true
+              }
+            });
+          }
         }
       });
     }
+    dispatch({
+      type: "SET_HOTKEY",
+      key: 'space',
+      press: 'onKeyDown',
+      fn: () => {
+        const game = getState().game;
+        const bike = getYourBike(game);
+        if (bike.boosts > 0) {
+          const action = {
+            type: 'SET_BOOST',
+            time: game.time + 1
+          };
+          dispatch({
+            type: 'ENQUEUE_ACTION',
+            action
+          });
+          dispatchToServer({
+            type: 'ENQUEUE_ACTION',
+            action: {
+              ...action,
+              isOther: true
+            }
+          });
+        }
+      }
+    });
   }, []);
   return /*#__PURE__*/React.createElement("div", {
     style: {}
@@ -70,7 +123,7 @@ function Game(props) {
 }
 module.exports = Game;
 
-},{"../clientToServer":4,"../config":5,"../postVisit":7,"bens_ui_components":80,"react":97}],2:[function(require,module,exports){
+},{"../clientToServer":4,"../config":5,"../postVisit":7,"../selectors/misc":12,"bens_ui_components":80,"react":97}],2:[function(require,module,exports){
 const React = require('react');
 const {
   Button,
@@ -209,7 +262,7 @@ const Settings = props => {
     state
   } = props;
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "Settings:")), "Game ms per tick:", /*#__PURE__*/React.createElement(Slider, {
-    value: session.config.msPerTick,
+    value: state.config.msPerTick,
     min: 1,
     max: 1000,
     noOriginalValue: true,
@@ -317,11 +370,12 @@ const config = {
   URL: isLocalHost ? null : "https://benhub.io",
   path: isLocalHost ? null : "/Tron/socket.io",
   worldSize: {
-    width: 50,
-    height: 50
+    width: 150,
+    height: 150
   },
-  msPerTick: 200,
-  numBoosts: 3
+  msPerTick: 50,
+  numBoosts: 3,
+  boostDuration: 6
 };
 module.exports = {
   config
@@ -378,9 +432,6 @@ exports.default = _default;
 // @flow
 
 const {
-  config
-} = require('../config');
-const {
   clamp,
   subtractWithDeficit
 } = require('bens_utils').math;
@@ -394,7 +445,8 @@ const {
   render
 } = require('../render');
 const {
-  getYourBike
+  getYourBike,
+  getOtherBike
 } = require('../selectors/misc');
 const {
   add,
@@ -406,27 +458,44 @@ const gameReducer = (game, action) => {
     case 'SET_DIRECTION':
       {
         const {
-          direction
+          direction,
+          time,
+          isOther
         } = action;
-        const bike = getYourBike(game);
+        let bike = getYourBike(game);
+        if (isOther) {
+          bike = getOtherBike(game);
+        }
         bike.direction = direction;
-        console.log("direction set", bike.direction);
         return game;
       }
-    case 'START_TICK':
+    case 'SET_BOOST':
       {
-        if (game != null && game.tickInterval != null) {
-          return game;
+        const {
+          isOther
+        } = action;
+        let bike = getYourBike(game);
+        if (isOther) {
+          bike = getOtherBike(game);
         }
-        game.prevTickTime = new Date().getTime();
-        return {
-          ...game,
-          tickInterval: setInterval(
-          // HACK: store is only available via window
-          () => store.dispatch({
-            type: 'TICK'
-          }), config.msPerTick)
-        };
+        bike.boosts -= 1;
+        bike.boost += game.config.boostDuration;
+        return game;
+      }
+    case 'ENQUEUE_ACTION':
+      {
+        const time = action.action.time;
+        if (!game.actions[time]) game.actions[time] = [];
+        game.actions[time].push(action.action);
+        if (game.time >= time) {
+          const numTicks = game.time - time + 1;
+          console.log("doing a rollback", numTicks);
+          rollBack(game, numTicks);
+          rollForward(game, numTicks - 1);
+        } else {
+          console.log("queueing in the future", time - game.time);
+        }
+        return game;
       }
     case 'STOP_TICK':
       {
@@ -436,49 +505,7 @@ const gameReducer = (game, action) => {
       }
     case 'TICK':
       {
-        game.time += 1;
-
-        // move each bike
-        let didBothLose = false;
-        let bikeThatLost = null;
-        for (const bike of game.bikes) {
-          let didLose = false;
-          // move at half speed when not boosting
-          if (!bike.isBoosting && game.time % 2 == 1) continue;
-          let moveVec = {
-            x: 0,
-            y: 0
-          };
-          if (bike.direction == 'left') moveVec.x = -1;
-          if (bike.direction == 'right') moveVec.x = 1;
-          if (bike.direction == 'up') moveVec.y = 1;
-          if (bike.direction == 'down') moveVec.y = -1;
-          bike.position = add(bike.position, moveVec);
-
-          // check for whether you're about to go outside the grid
-          if (bike.position.x < 0 || bike.position.x >= game.worldSize.width || bike.position.y < 0 || bike.position.y >= game.worldSize.height) {
-            didLose = true;
-            if (bikeThatLost != null) didBothLose = true; // check for ties
-            bikeThatLost = bike;
-            continue;
-          }
-
-          // check whether you just hit someone's trail
-          if (game.grid[bike.position.x][bike.position.y] != null) {
-            didLose = true;
-            if (bikeThatLost != null) didBothLose = true; // check for ties
-            bikeThatLost = bike;
-            continue;
-          }
-
-          // fill in your trail
-          game.grid[bike.position.x][bike.position.y] = bike.color;
-        }
-
-        // handle game over:
-        if (bikeThatLost != null) {
-          // TODO: handle game over
-        }
+        updateSimulation(game);
 
         // render
         render(game);
@@ -487,10 +514,93 @@ const gameReducer = (game, action) => {
   }
   return game;
 };
+const rollBack = (game, numTicks) => {
+  game.time -= numTicks;
+  for (const bike of game.bikes) {
+    for (let i = 0; i < numTicks; i++) {
+      bike.position = bike.prevPositions.pop();
+    }
+  }
+  return game;
+};
+const rollForward = (game, numTicks) => {
+  for (let i = 0; i < numTicks; i++) {
+    game = updateSimulation(game);
+  }
+};
+const updateSimulation = game => {
+  game.time += 1;
+  if (!game.actions[game.time]) game.actions[game.time] = [];
+
+  // check for enqueued actions
+  if (game.actions[game.time].length > 0) {
+    for (const action of game.actions[game.time]) {
+      game = gameReducer(game, action);
+    }
+  }
+
+  // move each bike
+  let didBothLose = false;
+  let bikeThatLost = null;
+  for (const bike of game.bikes) {
+    let didLose = false;
+    // move at half speed when not boosting
+    if (bike.boost == 0 && game.time % 2 == 1) continue;
+    bike.boost = Math.max(bike.boost - 1, 0); // subtract boost
+
+    let moveVec = {
+      x: 0,
+      y: 0
+    };
+    if (bike.direction == 'left') moveVec.x = -1;
+    if (bike.direction == 'right') moveVec.x = 1;
+    if (bike.direction == 'up') moveVec.y = 1;
+    if (bike.direction == 'down') moveVec.y = -1;
+    bike.prevPositions.push({
+      ...bike.position
+    });
+    bike.position = add(bike.position, moveVec);
+
+    // check for whether you're about to go outside the grid
+    if (bike.position.x < 0 || bike.position.x >= game.worldSize.width || bike.position.y < 0 || bike.position.y >= game.worldSize.height) {
+      didLose = true;
+      if (bikeThatLost != null) didBothLose = true; // check for ties
+      bikeThatLost = bike;
+      continue;
+    }
+
+    // check whether you just hit someone's trail
+    if (didHitTrail(game, bike)) {
+      didLose = true;
+      if (bikeThatLost != null) didBothLose = true; // check for ties
+      bikeThatLost = bike;
+      continue;
+    }
+  }
+
+  // handle game over:
+  if (bikeThatLost != null) {
+    console.log("game over");
+    clearInterval(game.tickInterval);
+    game.tickInterval = null;
+    // TODO: handle game over
+  }
+};
+
+const didHitTrail = (game, bike) => {
+  for (const b of game.bikes) {
+    for (const pos of b.prevPositions) {
+      if (equals(pos, bike.position)) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
 module.exports = {
   gameReducer
 };
-},{"../config":5,"../render":11,"../selectors/misc":12,"bens_utils":87}],9:[function(require,module,exports){
+},{"../render":11,"../selectors/misc":12,"bens_utils":87}],9:[function(require,module,exports){
 const modalReducer = (state, action) => {
   switch (action.type) {
     case 'DISMISS_MODAL':
@@ -694,12 +804,11 @@ const rootReducer = (state, action) => {
           clientID: state.clientID,
           entities,
           prevTickTime: new Date().getTime(),
-          time: 0,
           tickInterval: setInterval(
           // HACK: dispatch is only available via window
           () => dispatch({
             type: 'TICK'
-          }), config.msPerTick)
+          }), state.config.msPerTick)
         };
         return {
           ...state,
@@ -709,6 +818,8 @@ const rootReducer = (state, action) => {
       }
     case 'SET':
     case 'SET_DIRECTION':
+    case 'SET_BOOST':
+    case 'ENQUEUE_ACTION':
     case 'SELECT_ENTITIES':
     case 'TICK':
     case 'STOP_TICK':
@@ -737,8 +848,13 @@ const initState = () => {
 };
 const initGameState = (state, config, clientID) => {
   const game = {
+    time: 0,
     bikes: [],
-    grid: [],
+    actions: [[]],
+    // Arrayarray where each index is an array of actions that
+    // occurred on that tick
+
+    config: deepCopy(config),
     worldSize: {
       ...config.worldSize
     },
@@ -765,7 +881,8 @@ const initGameState = (state, config, clientID) => {
     },
     direction: 'right',
     boosts: config.numBoosts,
-    isBoosting: false
+    boost: 0,
+    prevPositions: []
   });
   game.bikes.push({
     isYou: !isHost(state),
@@ -776,29 +893,9 @@ const initGameState = (state, config, clientID) => {
     },
     direction: 'left',
     boosts: config.numBoosts,
-    isBoosting: false
+    boost: 0,
+    prevPositions: []
   });
-
-  // initialize grid
-  for (let x = 0; x < config.worldSize.width; x++) {
-    const row = [];
-    for (let y = 0; y < config.worldSize.height; y++) {
-      if (equals({
-        x,
-        y
-      }, game.bikes[0].position)) {
-        row.push('blue');
-      } else if (equals({
-        x,
-        y
-      }, game.bikes[1].position)) {
-        row.push('red');
-      } else {
-        row.push(null);
-      }
-    }
-    game.grid.push(row);
-  }
   return game;
 };
 module.exports = {
@@ -821,17 +918,13 @@ const render = game => {
     width,
     height
   } = game.worldSize;
-  ctx.fillStyle = "black";
-  ctx.fillRect(0, 0, width, height);
-  const imageData = ctx.createImageData(width, height);
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) {
-      if (!game.grid[x][y]) {
-        setColorAtPixel(imageData, 'black', width, x, y);
-      } else {
-        setColorAtPixel(imageData, game.grid[x][y], width, x, y);
-      }
-    }
+  // happens once in ui/Game initialization
+  // ctx.fillStyle = "black";
+  // ctx.fillRect(0, 0, width, height);
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  for (const bike of game.bikes) {
+    setColorAtPixel(imageData, bike.color, width, bike.position.x, bike.position.y);
   }
   ctx.putImageData(imageData, 0, 0, 0, 0, width, height);
 };
@@ -851,8 +944,27 @@ const getYourBike = game => {
     if (bike.isYou) return bike;
   }
 };
+const getOtherBike = game => {
+  for (const bike of game.bikes) {
+    if (!bike.isYou) return bike;
+  }
+};
+const oppositeDir = dir => {
+  switch (dir) {
+    case 'left':
+      return 'right';
+    case 'right':
+      return 'left';
+    case 'up':
+      return 'down';
+    case 'down':
+      return 'up';
+  }
+};
 module.exports = {
-  getYourBike
+  getYourBike,
+  getOtherBike,
+  oppositeDir
 };
 },{}],13:[function(require,module,exports){
 const getSession = state => {

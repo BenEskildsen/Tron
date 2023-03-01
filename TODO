@@ -1,13 +1,21 @@
 
 - - - - - TODO - - - - -
+  - handle game over
+    - modal
+      - showing who won
+      - rematch button that checks for both players having pressed it
+        - set ready state back to false, then same logic as Start in lobby
+
+
+- - - - - LATER - - - - - -
+  - only allow one direction change per tick(?)
+  - show editable settings in the lobby
+  - display number of boosts remaining
   - render world
     - doing it by pixel looks terrible :(
-  - hotkey handling for changing directions
-    - hotKeyHandler should use full state and not just hotkeys
-    - down allow setting direction directly opposite to current direction
-  - handle game over
-  - sending/receiving actions from the server
 
 
 - - - - - for multiplayer - - - - -
   - copy over UI/Main
+  - hotkey handling for changing directions
+    - hotKeyHandler should use full state and not just hotkeys

@@ -6,9 +6,10 @@ const config = {
   URL: isLocalHost ? null : "https://benhub.io",
   path: isLocalHost ? null : "/Tron/socket.io",
 
-  worldSize: {width: 50, height: 50},
-  msPerTick: 100,
+  worldSize: {width: 150, height: 150},
+  msPerTick: 50,
   numBoosts: 3,
+  boostDuration: 6,
 }
 
 module.exports = {
